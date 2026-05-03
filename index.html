@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GS Compression Viewer</title>
+  </head>
+  <body>
+    <main id="app">
+      <section id="viewport">
+        <canvas id="viewer"></canvas>
+        <div id="view-labels">
+          <span>Reference</span>
+          <span>Compressed</span>
+        </div>
+      </section>
+      <aside id="panel">
+        <header>
+          <h1>GS Compression Viewer</h1>
+          <p>Independent WebGL2 renderer for clustered quantization tests</p>
+        </header>
+
+        <section class="panel-section">
+          <label class="label" for="scene-select">Scene</label>
+          <select id="scene-select"></select>
+          <div class="button-row">
+            <button id="mode-reference" class="button">Reference</button>
+            <button id="mode-compressed" class="button active">Compressed</button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="label">Position</div>
+          <div class="button-row" id="position-bits">
+            <button class="button" data-bits="16">16b</button>
+            <button class="button" data-bits="10">10b</button>
+            <button class="button active" data-bits="8">8b</button>
+            <button class="button" data-bits="6">6b</button>
+          </div>
+          <label class="field">
+            <span>Cluster size</span>
+            <input id="cluster-size" type="range" min="32" max="256" step="32" value="128" />
+            <strong id="cluster-size-value">128</strong>
+          </label>
+          <div class="toggle-grid">
+            <label class="toggle">
+              <input id="enable-position" type="checkbox" checked />
+              <span>Position quantization</span>
+            </label>
+            <label class="toggle">
+              <input id="enable-radius" type="checkbox" checked />
+              <span>Radius quantization</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="label">Color ramp</div>
+          <div class="button-row" id="color-ramp">
+            <button class="button" data-colors="2">2</button>
+            <button class="button active" data-colors="4">4</button>
+            <button class="button" data-colors="8">8</button>
+          </div>
+          <label class="toggle">
+            <input id="enable-color" type="checkbox" checked />
+            <span>Color ramp</span>
+          </label>
+          <label class="toggle">
+            <input id="enable-alpha" type="checkbox" checked />
+            <span>Quantize alpha</span>
+          </label>
+        </section>
+
+        <section class="panel-section metrics">
+          <div class="label">Metrics</div>
+          <div class="metric-row"><span>Splats</span><strong id="m-count">-</strong></div>
+          <div class="metric-row"><span>Current</span><strong id="m-current">-</strong></div>
+          <div class="metric-row"><span>Compressed</span><strong id="m-compressed">-</strong></div>
+          <div class="metric-row hero"><span>Bytes / splat</span><strong id="m-bps">-</strong></div>
+          <div class="metric-row hero"><span>Theoretical gain</span><strong id="m-gain">-</strong></div>
+          <div class="metric-row"><span>Position p90</span><strong id="m-pos-p90">-</strong></div>
+          <div class="metric-row"><span>Color PSNR</span><strong id="m-psnr">-</strong></div>
+          <div class="metric-row"><span>Sort time</span><strong id="m-sort">-</strong></div>
+          <div class="metric-row"><span>Sort policy</span><strong id="m-sort-policy">-</strong></div>
+        </section>
+
+        <section class="panel-section notes">
+          <div class="label">Backend plan</div>
+          <p>Current path is TypeScript reference code. Sort is checked every frame but only recomputed when the camera changes. The C++ core in <code>wasm/</code> is the intended replacement for parsing, clustering, quantization, sorting, and metrics.</p>
+        </section>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
