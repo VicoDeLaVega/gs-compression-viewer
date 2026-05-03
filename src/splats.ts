@@ -2,7 +2,8 @@ export type SplatSet = {
   name: string;
   count: number;
   centers: Float32Array;
-  radii: Float32Array;
+  scales: Float32Array;
+  quats: Float32Array;
   colors: Float32Array;
 };
 
@@ -19,7 +20,8 @@ function makeSet(name: string, count: number): SplatSet {
     name,
     count,
     centers: new Float32Array(count * 3),
-    radii: new Float32Array(count),
+    scales: new Float32Array(count * 3),
+    quats: new Float32Array(count * 4),
     colors: new Float32Array(count * 4),
   };
 }
@@ -45,9 +47,22 @@ export function cloneSplats(src: SplatSet, name = src.name): SplatSet {
     name,
     count: src.count,
     centers: new Float32Array(src.centers),
-    radii: new Float32Array(src.radii),
+    scales: new Float32Array(src.scales),
+    quats: new Float32Array(src.quats),
     colors: new Float32Array(src.colors),
   };
+}
+
+function writeShape(out: SplatSet, i: number, sx: number, sy: number, sz: number, qx = 0, qy = 0, qz = 0, qw = 1) {
+  const o3 = i * 3;
+  const o4 = i * 4;
+  out.scales[o3] = sx;
+  out.scales[o3 + 1] = sy;
+  out.scales[o3 + 2] = sz;
+  out.quats[o4] = qx;
+  out.quats[o4 + 1] = qy;
+  out.quats[o4 + 2] = qz;
+  out.quats[o4 + 3] = qw;
 }
 
 export const SCENES: SceneFactory[] = [
@@ -68,7 +83,7 @@ export const SCENES: SceneFactory[] = [
         out.centers[o3] = Math.cos(angle) * radius + (noise() - 0.5) * 0.05;
         out.centers[o3 + 1] = (t - 0.5) * 3.2 + (noise() - 0.5) * 0.08;
         out.centers[o3 + 2] = Math.sin(angle) * radius + (noise() - 0.5) * 0.05;
-        out.radii[i] = 9 + noise() * 9;
+        writeShape(out, i, 0.030, 0.012, 0.018, 0, Math.sin(angle * 0.5), 0, Math.cos(angle * 0.5));
         writeColor(out.colors, i, 0.15 + 0.8 * t, 0.35 + 0.35 * Math.sin(angle), 0.9 - 0.55 * t, 0.42);
       }
       return out;
@@ -95,7 +110,7 @@ export const SCENES: SceneFactory[] = [
         out.centers[o3] = x;
         out.centers[o3 + 1] = y;
         out.centers[o3 + 2] = z;
-        out.radii[i] = 7 + noise() * 8;
+        writeShape(out, i, 0.022 + noise() * 0.015, 0.010 + noise() * 0.010, 0.016 + noise() * 0.012);
         writeColor(out.colors, i, 0.25 + 0.35 * (x + 1.7) / 3.4, 0.2 + 0.65 * (y + 1.4) / 2.8, 0.45 + 0.35 * (z + 1.7) / 3.4, 0.28);
       }
       return out;
@@ -117,7 +132,7 @@ export const SCENES: SceneFactory[] = [
         out.centers[o3] = x;
         out.centers[o3 + 1] = y;
         out.centers[o3 + 2] = z;
-        out.radii[i] = 10 + noise() * 16;
+        writeShape(out, i, 0.040, 0.018, 0.006, 0, 0, 0, 1);
         writeColor(out.colors, i, 0.18 + layer * 0.11, 0.75 - layer * 0.07, 0.45 + noise() * 0.25, 0.24 + layer * 0.025);
       }
       return out;

@@ -34,14 +34,16 @@ function sortedFromIndices(src: SplatSet, indices: Uint32Array): SplatSet {
     name: `${src.name}-sorted`,
     count: n,
     centers: new Float32Array(n * 3),
-    radii: new Float32Array(n),
+    scales: new Float32Array(n * 3),
+    quats: new Float32Array(n * 4),
     colors: new Float32Array(n * 4),
   };
 
   for (let dst = 0; dst < n; dst++) {
     const srcIdx = indices[dst];
     sorted.centers.set(src.centers.subarray(srcIdx * 3, srcIdx * 3 + 3), dst * 3);
-    sorted.radii[dst] = src.radii[srcIdx];
+    sorted.scales.set(src.scales.subarray(srcIdx * 3, srcIdx * 3 + 3), dst * 3);
+    sorted.quats.set(src.quats.subarray(srcIdx * 4, srcIdx * 4 + 4), dst * 4);
     sorted.colors.set(src.colors.subarray(srcIdx * 4, srcIdx * 4 + 4), dst * 4);
   }
 

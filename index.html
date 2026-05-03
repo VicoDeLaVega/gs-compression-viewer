@@ -56,9 +56,19 @@
               <span>Position quantization</span>
             </label>
             <label class="toggle">
-              <input id="enable-radius" type="checkbox" checked />
-              <span>Radius quantization</span>
+              <input id="enable-scale" type="checkbox" checked />
+              <span>Scale quantization</span>
             </label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="label">Scale</div>
+          <div class="button-row" id="scale-bits">
+            <button class="button active" data-bits="8">8b</button>
+            <button class="button" data-bits="6">6b</button>
+            <button class="button" data-bits="5">5b</button>
+            <button class="button" data-bits="4">4b</button>
           </div>
         </section>
 
@@ -87,7 +97,9 @@
           <div class="metric-row hero"><span>Bytes / splat</span><strong id="m-bps">-</strong></div>
           <div class="metric-row hero"><span>Theoretical gain</span><strong id="m-gain">-</strong></div>
           <div class="metric-row"><span>Position p90</span><strong id="m-pos-p90">-</strong></div>
+          <div class="metric-row"><span>Scale p90</span><strong id="m-scale-p90">-</strong></div>
           <div class="metric-row"><span>Color PSNR</span><strong id="m-psnr">-</strong></div>
+          <div class="metric-row hero"><span>FPS</span><strong id="m-fps">-</strong></div>
           <div class="metric-row"><span>Morton time</span><strong id="m-morton">-</strong></div>
           <div class="metric-row"><span>Sort time</span><strong id="m-sort">-</strong></div>
           <div class="metric-row"><span>Backend</span><strong id="m-backend">-</strong></div>
@@ -95,7 +107,7 @@
 
         <section class="panel-section notes">
           <div class="label">Backend plan</div>
-          <p>Sort is checked every frame but only recomputed when the camera changes. WASM currently covers Morton code generation and depth sort; quantization remains TypeScript reference code.</p>
+          <p>Depth sort runs every frame. WASM currently covers Morton code generation and depth sort; quantization remains TypeScript reference code.</p>
         </section>
       </aside>
     </main>

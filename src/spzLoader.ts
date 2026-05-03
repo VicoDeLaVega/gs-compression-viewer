@@ -54,6 +54,61 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
 }
 
+function normalizeQuat(quats: Float32Array, out: number) {
+  const x = quats[out];
+  const y = quats[out + 1];
+  const z = quats[out + 2];
+  const w = quats[out + 3];
+  const invLen = 1 / (Math.hypot(x, y, z, w) || 1);
+  quats[out] = x * invLen;
+  quats[out + 1] = y * invLen;
+  quats[out + 2] = z * invLen;
+  quats[out + 3] = w * invLen;
+}
+
+function decodeSmallestThreeQuat(bytes: Uint8Array, offset: number, out: Float32Array, dst: number) {
+  const maxValue = Math.SQRT1_2;
+  const combined = (
+    bytes[offset] |
+    (bytes[offset + 1] << 8) |
+    (bytes[offset + 2] << 16) |
+    (bytes[offset + 3] << 24)
+  ) >>> 0;
+  const largestIndex = combined >>> 30;
+  const valueMask = (1 << 9) - 1;
+  let remaining = combined;
+  let sumSquares = 0;
+  out[dst] = 0;
+  out[dst + 1] = 0;
+  out[dst + 2] = 0;
+  out[dst + 3] = 0;
+
+  for (let i = 3; i >= 0; --i) {
+    if (i === largestIndex) continue;
+    const value = remaining & valueMask;
+    const sign = (remaining >>> 9) & 1;
+    remaining >>>= 10;
+    const decoded = maxValue * (value / valueMask) * (sign === 0 ? 1 : -1);
+    out[dst + i] = decoded;
+    sumSquares += decoded * decoded;
+  }
+
+  out[dst + largestIndex] = Math.sqrt(Math.max(0, 1 - sumSquares));
+  normalizeQuat(out, dst);
+}
+
+function applyViewerFlipToQuat(quats: Float32Array, dst: number) {
+  const x = quats[dst];
+  const y = quats[dst + 1];
+  const z = quats[dst + 2];
+  const w = quats[dst + 3];
+  quats[dst] = w;
+  quats[dst + 1] = -z;
+  quats[dst + 2] = y;
+  quats[dst + 3] = -x;
+  normalizeQuat(quats, dst);
+}
+
 function robustBounds(centers: Float32Array, count: number, low = 0.02, high = 0.98) {
   const xs = new Array<number>(count);
   const ys = new Array<number>(count);
@@ -98,7 +153,8 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
   const count = Math.ceil(sourceCount / stride);
 
   const centers = new Float32Array(count * 3);
-  const radii = new Float32Array(count);
+  const scales = new Float32Array(count * 3);
+  const quats = new Float32Array(count * 4);
   const colors = new Float32Array(count * 4);
   let offset = 16;
 
@@ -129,6 +185,7 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
     bounds.maxY - bounds.minY,
     bounds.maxZ - bounds.minZ,
   ) || 1;
+  const scale = 3 / diag;
 
   const opacityScale = flags & 0x80 ? 2 : 1;
   for (let i = 0, out = 0; i < sourceCount; i += stride, out++) {
@@ -148,19 +205,43 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
 
   for (let i = 0, out = 0; i < sourceCount; i += stride, out++) {
     const src = offset + i * 3;
+    const dst = out * 3;
     const sx = Math.exp(bytes[src] / 16 - 10);
     const sy = Math.exp(bytes[src + 1] / 16 - 10);
     const sz = Math.exp(bytes[src + 2] / 16 - 10);
-    radii[out] = clamp(((sx + sy + sz) / 3 / diag) * 7000, 2, 34);
+    scales[dst] = sx * scale;
+    scales[dst + 1] = sy * scale;
+    scales[dst + 2] = sz * scale;
   }
   offset += sourceCount * 3;
 
-  // Skip quaternions and SH. This viewer is intentionally billboard-only for now.
-  offset += sourceCount * (version === 3 ? 4 : 3);
+  if (version === 3) {
+    for (let i = 0, out = 0; i < sourceCount; i += stride, out++) {
+      const dst = out * 4;
+      decodeSmallestThreeQuat(bytes, offset + i * 4, quats, dst);
+      applyViewerFlipToQuat(quats, dst);
+    }
+    offset += sourceCount * 4;
+  } else {
+    for (let i = 0, out = 0; i < sourceCount; i += stride, out++) {
+      const src = offset + i * 3;
+      const dst = out * 4;
+      const qx = bytes[src] / 127.5 - 1;
+      const qy = bytes[src + 1] / 127.5 - 1;
+      const qz = bytes[src + 2] / 127.5 - 1;
+      quats[dst] = qx;
+      quats[dst + 1] = qy;
+      quats[dst + 2] = qz;
+      quats[dst + 3] = Math.sqrt(Math.max(0, 1 - qx * qx - qy * qy - qz * qz));
+      normalizeQuat(quats, dst);
+      applyViewerFlipToQuat(quats, dst);
+    }
+    offset += sourceCount * 3;
+  }
+
   const shVecs = [0, 3, 8, 15][shDegree] ?? 0;
   offset += sourceCount * shVecs * 3;
 
-  const scale = 3 / diag;
   for (let i = 0; i < count; i++) {
     const o = i * 3;
     const x = (centers[o] - centerX) * scale;
@@ -175,7 +256,8 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
     name: scene.id,
     count,
     centers,
-    radii,
+    scales,
+    quats,
     colors,
   };
 }

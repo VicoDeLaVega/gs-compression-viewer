@@ -5,7 +5,8 @@ export type CompressionConfig = {
   clusterSize: number;
   enablePosition: boolean;
   positionBits: number;
-  enableRadius: boolean;
+  enableScale: boolean;
+  scaleBits: number;
   enableColor: boolean;
   rampColors: number;
   enableAlpha: boolean;
@@ -16,7 +17,7 @@ export type CompressionMetrics = {
   compressedBytesPerSplat: number;
   gain: number;
   posP90: number | null;
-  radiusP90: number | null;
+  scaleP90: number | null;
   colorPsnr: number | null;
   mortonMs: number;
   mortonBackend: string;
@@ -70,11 +71,14 @@ function estimateBytesPerSplat(cfg: CompressionConfig) {
   const pos = cfg.enablePosition && cfg.positionBits < 16
     ? (cfg.positionBits * 3) / 8 + (6 * metadataBytes) / cfg.clusterSize
     : 6;
-  const radius = cfg.enableRadius ? 1 + (2 * metadataBytes) / cfg.clusterSize : 3;
+  const scale = cfg.enableScale && cfg.scaleBits <= 8
+    ? (cfg.scaleBits * 3) / 8 + (6 * metadataBytes) / cfg.clusterSize
+    : 3;
+  const quat = 4;
   const rgbIndex = cfg.enableColor ? 1 : 3;
   const rgbRamp = cfg.enableColor ? (cfg.rampColors * 3) / cfg.clusterSize : 0;
   const alpha = cfg.enableAlpha ? 0.5 + (2 * metadataBytes) / cfg.clusterSize : 1;
-  return pos + radius + rgbIndex + rgbRamp + alpha;
+  return pos + scale + quat + rgbIndex + rgbRamp + alpha;
 }
 
 export function compressSplats(
@@ -117,15 +121,17 @@ export function compressSplats(
   const order = Array.from({ length: n }, (_, i) => i);
   order.sort((a, b) => keys[a] - keys[b]);
   const posErrors = new Float32Array(n);
-  const radiusErrors = new Float32Array(n);
+  const scaleErrors = new Float32Array(n);
   let colorMse = 0;
-  const levels = 2 ** cfg.positionBits - 1;
+  const posLevels = 2 ** cfg.positionBits - 1;
+  const scaleLevels = 2 ** cfg.scaleBits - 1;
 
   for (let c0 = 0; c0 < n; c0 += cfg.clusterSize) {
     const c1 = Math.min(n, c0 + cfg.clusterSize);
     let cMinX = Infinity, cMinY = Infinity, cMinZ = Infinity;
     let cMaxX = -Infinity, cMaxY = -Infinity, cMaxZ = -Infinity;
-    let rMin = Infinity, rMax = -Infinity;
+    let sMinX = Infinity, sMinY = Infinity, sMinZ = Infinity;
+    let sMaxX = -Infinity, sMaxY = -Infinity, sMaxZ = -Infinity;
     let aMin = 1, aMax = 0;
     const avg = [0, 0, 0];
 
@@ -136,9 +142,10 @@ export function compressSplats(
       if (x < cMinX) cMinX = x; if (x > cMaxX) cMaxX = x;
       if (y < cMinY) cMinY = y; if (y > cMaxY) cMaxY = y;
       if (z < cMinZ) cMinZ = z; if (z > cMaxZ) cMaxZ = z;
-      const radius = src.radii[i];
-      if (radius < rMin) rMin = radius;
-      if (radius > rMax) rMax = radius;
+      const sx = src.scales[o3], sy = src.scales[o3 + 1], sz = src.scales[o3 + 2];
+      if (sx < sMinX) sMinX = sx; if (sx > sMaxX) sMaxX = sx;
+      if (sy < sMinY) sMinY = sy; if (sy > sMaxY) sMaxY = sy;
+      if (sz < sMinZ) sMinZ = sz; if (sz > sMaxZ) sMaxZ = sz;
       avg[0] += src.colors[o4]; avg[1] += src.colors[o4 + 1]; avg[2] += src.colors[o4 + 2];
       const a = src.colors[o4 + 3];
       if (a < aMin) aMin = a;
@@ -161,28 +168,38 @@ export function compressSplats(
     const crx = cMaxX - cMinX || 1e-9;
     const cry = cMaxY - cMinY || 1e-9;
     const crz = cMaxZ - cMinZ || 1e-9;
-    const rr = rMax - rMin || 1e-9;
+    const srx = sMaxX - sMinX || 1e-9;
+    const sry = sMaxY - sMinY || 1e-9;
+    const srz = sMaxZ - sMinZ || 1e-9;
     const ar = aMax - aMin || 1e-9;
     for (let j = c0; j < c1; j++) {
       const i = order[j];
       const o3 = i * 3, o4 = i * 4;
       const ox = src.centers[o3], oy = src.centers[o3 + 1], oz = src.centers[o3 + 2];
       if (cfg.enablePosition && cfg.positionBits < 16) {
-        const qx = Math.round(((ox - cMinX) / crx) * levels);
-        const qy = Math.round(((oy - cMinY) / cry) * levels);
-        const qz = Math.round(((oz - cMinZ) / crz) * levels);
-        out.centers[o3] = cMinX + (qx / levels) * crx;
-        out.centers[o3 + 1] = cMinY + (qy / levels) * cry;
-        out.centers[o3 + 2] = cMinZ + (qz / levels) * crz;
+        const qx = Math.round(((ox - cMinX) / crx) * posLevels);
+        const qy = Math.round(((oy - cMinY) / cry) * posLevels);
+        const qz = Math.round(((oz - cMinZ) / crz) * posLevels);
+        out.centers[o3] = cMinX + (qx / posLevels) * crx;
+        out.centers[o3 + 1] = cMinY + (qy / posLevels) * cry;
+        out.centers[o3 + 2] = cMinZ + (qz / posLevels) * crz;
       }
       const dx = out.centers[o3] - ox, dy = out.centers[o3 + 1] - oy, dz = out.centers[o3 + 2] - oz;
       posErrors[i] = Math.hypot(dx, dy, dz);
 
-      if (cfg.enableRadius) {
-        const qr = Math.round(((src.radii[i] - rMin) / rr) * 255);
-        out.radii[i] = rMin + (qr / 255) * rr;
+      if (cfg.enableScale && cfg.scaleBits <= 8) {
+        const qsx = Math.round(((src.scales[o3] - sMinX) / srx) * scaleLevels);
+        const qsy = Math.round(((src.scales[o3 + 1] - sMinY) / sry) * scaleLevels);
+        const qsz = Math.round(((src.scales[o3 + 2] - sMinZ) / srz) * scaleLevels);
+        out.scales[o3] = sMinX + (qsx / scaleLevels) * srx;
+        out.scales[o3 + 1] = sMinY + (qsy / scaleLevels) * sry;
+        out.scales[o3 + 2] = sMinZ + (qsz / scaleLevels) * srz;
       }
-      radiusErrors[i] = Math.abs(out.radii[i] - src.radii[i]);
+      const dsx = out.scales[o3] - src.scales[o3];
+      const dsy = out.scales[o3 + 1] - src.scales[o3 + 1];
+      const dsz = out.scales[o3 + 2] - src.scales[o3 + 2];
+      const srcScaleLen = Math.hypot(src.scales[o3], src.scales[o3 + 1], src.scales[o3 + 2]) || 1;
+      scaleErrors[i] = Math.hypot(dsx, dsy, dsz) / srcScaleLen;
 
       let bestD = 0;
       if (cfg.enableColor) {
@@ -206,14 +223,15 @@ export function compressSplats(
 
   colorMse /= n;
   const compressedBytesPerSplat = estimateBytesPerSplat(cfg);
+  const currentBytesPerSplat = 17;
   return {
     splats: out,
     metrics: {
-      currentBytesPerSplat: 16,
+      currentBytesPerSplat,
       compressedBytesPerSplat,
-      gain: 1 - compressedBytesPerSplat / 16,
+      gain: 1 - compressedBytesPerSplat / currentBytesPerSplat,
       posP90: cfg.enablePosition && cfg.positionBits < 16 ? percentile(posErrors, 0.9) : null,
-      radiusP90: cfg.enableRadius ? percentile(radiusErrors, 0.9) : null,
+      scaleP90: cfg.enableScale && cfg.scaleBits <= 8 ? percentile(scaleErrors, 0.9) : null,
       colorPsnr: cfg.enableColor && colorMse > 0 ? 10 * Math.log10(1 / colorMse) : null,
       mortonMs,
       mortonBackend: backend?.label ?? "TS",
@@ -237,13 +255,15 @@ export function sortSplats(src: SplatSet, viewMatrix: Float32Array | number[]): 
     name: `${src.name}-sorted`,
     count: n,
     centers: new Float32Array(n * 3),
-    radii: new Float32Array(n),
+    scales: new Float32Array(n * 3),
+    quats: new Float32Array(n * 4),
     colors: new Float32Array(n * 4),
   };
   for (let dst = 0; dst < n; dst++) {
     const srcIdx = indices[dst];
     sorted.centers.set(src.centers.subarray(srcIdx * 3, srcIdx * 3 + 3), dst * 3);
-    sorted.radii[dst] = src.radii[srcIdx];
+    sorted.scales.set(src.scales.subarray(srcIdx * 3, srcIdx * 3 + 3), dst * 3);
+    sorted.quats.set(src.quats.subarray(srcIdx * 4, srcIdx * 4 + 4), dst * 4);
     sorted.colors.set(src.colors.subarray(srcIdx * 4, srcIdx * 4 + 4), dst * 4);
   }
 

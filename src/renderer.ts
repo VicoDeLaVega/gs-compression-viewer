@@ -7,22 +7,79 @@ precision highp float;
 
 layout(location=0) in vec2 aCorner;
 layout(location=1) in vec3 iCenter;
-layout(location=2) in float iRadius;
-layout(location=3) in vec4 iColor;
+layout(location=2) in vec3 iScale;
+layout(location=3) in vec4 iQuat;
+layout(location=4) in vec4 iColor;
 
 uniform mat4 uViewProjection;
+uniform mat4 uViewMatrix;
+uniform mat4 uProjectionMatrix;
 uniform vec2 uViewport;
 uniform float uRadiusScale;
 
 out vec2 vLocal;
 out vec4 vColor;
 
+mat3 scaleQuaternionToMatrix(vec3 s, vec4 q) {
+  return mat3(
+    s.x * (1.0 - 2.0 * (q.y * q.y + q.z * q.z)),
+    s.x * (2.0 * (q.x * q.y + q.w * q.z)),
+    s.x * (2.0 * (q.x * q.z - q.w * q.y)),
+    s.y * (2.0 * (q.x * q.y - q.w * q.z)),
+    s.y * (1.0 - 2.0 * (q.x * q.x + q.z * q.z)),
+    s.y * (2.0 * (q.y * q.z + q.w * q.x)),
+    s.z * (2.0 * (q.x * q.z + q.w * q.y)),
+    s.z * (2.0 * (q.y * q.z - q.w * q.x)),
+    s.z * (1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+  );
+}
+
 void main() {
-  vec4 clip = uViewProjection * vec4(iCenter, 1.0);
-  vec2 pixel = vec2(iRadius * uRadiusScale * 2.0 / uViewport.x, iRadius * uRadiusScale * 2.0 / uViewport.y);
-  clip.xy += aCorner * pixel * clip.w;
-  gl_Position = clip;
-  vLocal = aCorner;
+  const float maxStdDev = 3.0;
+  const float maxPixelRadius = 128.0;
+
+  vec4 clipCenter = uViewProjection * vec4(iCenter, 1.0);
+  if (clipCenter.w <= 0.0) {
+    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+    vLocal = vec2(99.0);
+    vColor = vec4(0.0);
+    return;
+  }
+
+  vec3 viewCenter = (uViewMatrix * vec4(iCenter, 1.0)).xyz;
+  vec3 scale = max(iScale * uRadiusScale, vec3(0.00001));
+  mat3 RS = mat3(uViewMatrix) * scaleQuaternionToMatrix(scale, normalize(iQuat));
+  mat3 cov3D = RS * transpose(RS);
+
+  vec2 focal = 0.5 * uViewport * vec2(uProjectionMatrix[0][0], uProjectionMatrix[1][1]);
+  float invZ = 1.0 / max(0.0001, -viewCenter.z);
+  vec2 J1 = focal * invZ;
+  vec2 J2 = (J1 * viewCenter.xy) * invZ;
+  mat3 J = mat3(
+    J1.x, 0.0, J2.x,
+    0.0, J1.y, J2.y,
+    0.0, 0.0, 0.0
+  );
+
+  mat3 cov2D = transpose(J) * cov3D * J;
+  float a = cov2D[0][0] + 0.25;
+  float d = cov2D[1][1] + 0.25;
+  float b = cov2D[0][1];
+  float det = max(0.000001, a * d - b * b);
+  float eigenAvg = 0.5 * (a + d);
+  float eigenDelta = sqrt(max(0.0, eigenAvg * eigenAvg - det));
+  float eigen1 = max(0.000001, eigenAvg + eigenDelta);
+  float eigen2 = max(0.000001, eigenAvg - eigenDelta);
+
+  vec2 eigenVec1 = abs(b) < 0.0001 ? vec2(1.0, 0.0) : normalize(vec2(b, eigen1 - a));
+  vec2 eigenVec2 = vec2(eigenVec1.y, -eigenVec1.x);
+  float scale1 = min(maxPixelRadius, maxStdDev * sqrt(eigen1));
+  float scale2 = min(maxPixelRadius, maxStdDev * sqrt(eigen2));
+
+  vec2 pixelOffset = aCorner.x * eigenVec1 * scale1 + aCorner.y * eigenVec2 * scale2;
+  vec2 ndcOffset = (2.0 / uViewport) * pixelOffset;
+  gl_Position = vec4(clipCenter.xy + ndcOffset * clipCenter.w, clipCenter.zw);
+  vLocal = aCorner * maxStdDev;
   vColor = iColor;
 }`;
 
@@ -35,8 +92,8 @@ out vec4 fragColor;
 
 void main() {
   float r2 = dot(vLocal, vLocal);
-  if (r2 > 1.0) discard;
-  float a = exp(-r2 * 4.0) * vColor.a;
+  if (r2 > 9.0) discard;
+  float a = exp(-0.5 * r2) * vColor.a;
   if (a < 0.004) discard;
   fragColor = vec4(vColor.rgb, a);
 }`;
@@ -98,7 +155,8 @@ export class GaussianRenderer {
   private readonly program: WebGLProgram;
   private readonly vao: WebGLVertexArrayObject;
   private readonly centerBuffer: WebGLBuffer;
-  private readonly radiusBuffer: WebGLBuffer;
+  private readonly scaleBuffer: WebGLBuffer;
+  private readonly quatBuffer: WebGLBuffer;
   private readonly colorBuffer: WebGLBuffer;
   private splatCount = 0;
   private readonly viewProjection = new THREE.Matrix4();
@@ -113,12 +171,14 @@ export class GaussianRenderer {
 
     const vao = gl.createVertexArray();
     const centerBuffer = gl.createBuffer();
-    const radiusBuffer = gl.createBuffer();
+    const scaleBuffer = gl.createBuffer();
+    const quatBuffer = gl.createBuffer();
     const colorBuffer = gl.createBuffer();
-    if (!vao || !centerBuffer || !radiusBuffer || !colorBuffer) throw new Error("Could not allocate GL buffers");
+    if (!vao || !centerBuffer || !scaleBuffer || !quatBuffer || !colorBuffer) throw new Error("Could not allocate GL buffers");
     this.vao = vao;
     this.centerBuffer = centerBuffer;
-    this.radiusBuffer = radiusBuffer;
+    this.scaleBuffer = scaleBuffer;
+    this.quatBuffer = quatBuffer;
     this.colorBuffer = colorBuffer;
 
     const cornerBuffer = gl.createBuffer();
@@ -133,15 +193,20 @@ export class GaussianRenderer {
     gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
     gl.vertexAttribDivisor(1, 1);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, radiusBuffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, scaleBuffer);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
     gl.vertexAttribDivisor(2, 1);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quatBuffer);
     gl.enableVertexAttribArray(3);
     gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 0, 0);
     gl.vertexAttribDivisor(3, 1);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(4, 1);
     gl.bindVertexArray(null);
 
     this.camera.position.set(0, 0.5, 5);
@@ -169,8 +234,10 @@ export class GaussianRenderer {
     this.splatCount = splats.count;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.centerBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, splats.centers, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.radiusBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, splats.radii, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.scaleBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, splats.scales, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quatBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, splats.quats, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, splats.colors, gl.DYNAMIC_DRAW);
   }
@@ -211,6 +278,8 @@ export class GaussianRenderer {
 
     this.viewProjection.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
     gl.uniformMatrix4fv(gl.getUniformLocation(this.program, "uViewProjection"), false, this.viewProjection.elements);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.program, "uViewMatrix"), false, this.camera.matrixWorldInverse.elements);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.program, "uProjectionMatrix"), false, this.camera.projectionMatrix.elements);
     gl.uniform2f(gl.getUniformLocation(this.program, "uViewport"), this.lastWidth, this.lastHeight);
     gl.uniform1f(gl.getUniformLocation(this.program, "uRadiusScale"), radiusScale);
     gl.bindVertexArray(this.vao);
