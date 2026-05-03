@@ -18,11 +18,28 @@ export type CompressionMetrics = {
   posP90: number | null;
   radiusP90: number | null;
   colorPsnr: number | null;
+  mortonMs: number;
+  mortonBackend: string;
 };
 
 export type SortResult = {
   splats: SplatSet;
   sortMs: number;
+  backend?: string;
+};
+
+export type MortonBackend = {
+  label: string;
+  mortonCodes: (
+    centers: Float32Array,
+    count: number,
+    minX: number,
+    minY: number,
+    minZ: number,
+    invX: number,
+    invY: number,
+    invZ: number,
+  ) => Uint32Array;
 };
 
 function expandBits(v: number) {
@@ -60,7 +77,11 @@ function estimateBytesPerSplat(cfg: CompressionConfig) {
   return pos + radius + rgbIndex + rgbRamp + alpha;
 }
 
-export function compressSplats(src: SplatSet, cfg: CompressionConfig): { splats: SplatSet; metrics: CompressionMetrics } {
+export function compressSplats(
+  src: SplatSet,
+  cfg: CompressionConfig,
+  backend?: MortonBackend,
+): { splats: SplatSet; metrics: CompressionMetrics } {
   const out = cloneSplats(src, `${src.name}-compressed`);
   const n = src.count;
   const keys = new Uint32Array(n);
@@ -78,14 +99,20 @@ export function compressSplats(src: SplatSet, cfg: CompressionConfig): { splats:
   const rx = maxX - minX || 1;
   const ry = maxY - minY || 1;
   const rz = maxZ - minZ || 1;
-  for (let i = 0; i < n; i++) {
-    const o = i * 3;
-    keys[i] = morton3(
-      Math.round(((src.centers[o] - minX) / rx) * 1023),
-      Math.round(((src.centers[o + 1] - minY) / ry) * 1023),
-      Math.round(((src.centers[o + 2] - minZ) / rz) * 1023),
-    );
+  const mortonT0 = performance.now();
+  if (backend) {
+    keys.set(backend.mortonCodes(src.centers, n, minX, minY, minZ, 1 / rx, 1 / ry, 1 / rz));
+  } else {
+    for (let i = 0; i < n; i++) {
+      const o = i * 3;
+      keys[i] = morton3(
+        Math.round(((src.centers[o] - minX) / rx) * 1023),
+        Math.round(((src.centers[o + 1] - minY) / ry) * 1023),
+        Math.round(((src.centers[o + 2] - minZ) / rz) * 1023),
+      );
+    }
   }
+  const mortonMs = performance.now() - mortonT0;
 
   const order = Array.from({ length: n }, (_, i) => i);
   order.sort((a, b) => keys[a] - keys[b]);
@@ -188,6 +215,8 @@ export function compressSplats(src: SplatSet, cfg: CompressionConfig): { splats:
       posP90: cfg.enablePosition && cfg.positionBits < 16 ? percentile(posErrors, 0.9) : null,
       radiusP90: cfg.enableRadius ? percentile(radiusErrors, 0.9) : null,
       colorPsnr: cfg.enableColor && colorMse > 0 ? 10 * Math.log10(1 / colorMse) : null,
+      mortonMs,
+      mortonBackend: backend?.label ?? "TS",
     },
   };
 }

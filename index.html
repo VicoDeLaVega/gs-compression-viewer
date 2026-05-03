@@ -30,6 +30,14 @@
         </section>
 
         <section class="panel-section">
+          <div class="label">Compute backend</div>
+          <div class="button-row">
+            <button id="backend-ts" class="button active">TypeScript</button>
+            <button id="backend-wasm" class="button" disabled>WASM C++</button>
+          </div>
+        </section>
+
+        <section class="panel-section">
           <div class="label">Position</div>
           <div class="button-row" id="position-bits">
             <button class="button" data-bits="16">16b</button>
@@ -80,13 +88,14 @@
           <div class="metric-row hero"><span>Theoretical gain</span><strong id="m-gain">-</strong></div>
           <div class="metric-row"><span>Position p90</span><strong id="m-pos-p90">-</strong></div>
           <div class="metric-row"><span>Color PSNR</span><strong id="m-psnr">-</strong></div>
+          <div class="metric-row"><span>Morton time</span><strong id="m-morton">-</strong></div>
           <div class="metric-row"><span>Sort time</span><strong id="m-sort">-</strong></div>
-          <div class="metric-row"><span>Sort policy</span><strong id="m-sort-policy">-</strong></div>
+          <div class="metric-row"><span>Backend</span><strong id="m-backend">-</strong></div>
         </section>
 
         <section class="panel-section notes">
           <div class="label">Backend plan</div>
-          <p>Current path is TypeScript reference code. Sort is checked every frame but only recomputed when the camera changes. The C++ core in <code>wasm/</code> is the intended replacement for parsing, clustering, quantization, sorting, and metrics.</p>
+          <p>Sort is checked every frame but only recomputed when the camera changes. WASM currently covers Morton code generation and depth sort; quantization remains TypeScript reference code.</p>
         </section>
       </aside>
     </main>

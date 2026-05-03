@@ -4,6 +4,7 @@ import { compressSplats, sortSplats, type CompressionConfig, type CompressionMet
 import { GaussianRenderer } from "./renderer";
 import { SCENES, type SplatSet } from "./splats";
 import { LOCAL_SPZ_SCENES, loadLocalSpz } from "./spzLoader";
+import { loadWasmBackend, type WasmBackend } from "./wasmBackend";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#viewer");
 const sceneSelect = document.querySelector<HTMLSelectElement>("#scene-select");
@@ -13,6 +14,8 @@ const positionToggle = document.querySelector<HTMLInputElement>("#enable-positio
 const radiusToggle = document.querySelector<HTMLInputElement>("#enable-radius");
 const colorToggle = document.querySelector<HTMLInputElement>("#enable-color");
 const alphaToggle = document.querySelector<HTMLInputElement>("#enable-alpha");
+const backendTsButton = document.querySelector<HTMLButtonElement>("#backend-ts");
+const backendWasmButton = document.querySelector<HTMLButtonElement>("#backend-wasm");
 if (!canvas || !sceneSelect || !clusterSlider || !clusterValue || !positionToggle || !radiusToggle || !colorToggle || !alphaToggle) {
   throw new Error("Missing UI elements");
 }
@@ -25,8 +28,9 @@ const metrics = {
   gain: document.querySelector<HTMLElement>("#m-gain"),
   posP90: document.querySelector<HTMLElement>("#m-pos-p90"),
   psnr: document.querySelector<HTMLElement>("#m-psnr"),
+  morton: document.querySelector<HTMLElement>("#m-morton"),
   sort: document.querySelector<HTMLElement>("#m-sort"),
-  sortPolicy: document.querySelector<HTMLElement>("#m-sort-policy"),
+  backend: document.querySelector<HTMLElement>("#m-backend"),
 };
 
 const renderer = new GaussianRenderer(canvas);
@@ -48,7 +52,10 @@ let config: CompressionConfig = {
 };
 let lastCameraKey = "";
 let lastSortMs = 0;
+let lastSortBackend = "TS";
 let currentMetrics: CompressionMetrics;
+let backendMode: "ts" | "wasm" = "ts";
+let wasmBackend: WasmBackend | null = null;
 
 for (const scene of SCENES) {
   const option = document.createElement("option");
@@ -80,7 +87,7 @@ function setButtonGroup(selector: string, attr: string, value: string) {
 }
 
 function compute() {
-  const result = compressSplats(reference, config);
+  const result = compressSplats(reference, config, backendMode === "wasm" ? wasmBackend ?? undefined : undefined);
   compressed = result.splats;
   currentMetrics = result.metrics;
   active = mode === "reference" ? reference : compressed;
@@ -109,8 +116,9 @@ function updateMetrics() {
   if (metrics.gain) metrics.gain.textContent = fmtPct(currentMetrics.gain);
   if (metrics.posP90) metrics.posP90.textContent = currentMetrics.posP90 == null ? "off" : currentMetrics.posP90.toFixed(5);
   if (metrics.psnr) metrics.psnr.textContent = currentMetrics.colorPsnr == null ? "off" : `${currentMetrics.colorPsnr.toFixed(2)} dB`;
+  if (metrics.morton) metrics.morton.textContent = `${currentMetrics.mortonMs.toFixed(2)} ms`;
   if (metrics.sort) metrics.sort.textContent = `${lastSortMs.toFixed(2)} ms`;
-  if (metrics.sortPolicy) metrics.sortPolicy.textContent = "TS, on camera change";
+  if (metrics.backend) metrics.backend.textContent = `${currentMetrics.mortonBackend} Morton, ${lastSortBackend} sort`;
 }
 
 function cameraKey() {
@@ -123,11 +131,25 @@ function updateSortedIfNeeded() {
   const key = cameraKey();
   if (key === lastCameraKey && sorted) return;
   lastCameraKey = key;
-  const result = sortSplats(active, renderer.camera.matrixWorldInverse.elements);
+  const result = backendMode === "wasm" && wasmBackend
+    ? wasmBackend.sortSplats(active, renderer.camera.matrixWorldInverse.elements)
+    : sortSplats(active, renderer.camera.matrixWorldInverse.elements);
   sorted = result.splats;
   lastSortMs = result.sortMs;
+  lastSortBackend = result.backend ?? "TS";
   renderer.upload(sorted);
   updateMetrics();
+}
+
+function setBackendMode(nextMode: "ts" | "wasm") {
+  if (nextMode === "wasm" && !wasmBackend) return;
+  backendMode = nextMode;
+  backendTsButton?.classList.toggle("active", backendMode === "ts");
+  backendWasmButton?.classList.toggle("active", backendMode === "wasm");
+  lastCameraKey = "";
+  lastSortMs = 0;
+  lastSortBackend = backendMode === "wasm" ? "WASM C++" : "TS";
+  compute();
 }
 
 document.querySelector("#mode-reference")?.addEventListener("click", () => {
@@ -189,11 +211,29 @@ alphaToggle.addEventListener("change", () => {
   compute();
 });
 
+backendTsButton?.addEventListener("click", () => {
+  setBackendMode("ts");
+});
+
+backendWasmButton?.addEventListener("click", () => {
+  setBackendMode("wasm");
+});
+
 sceneSelect.addEventListener("change", () => {
   void loadScene(sceneSelect.value);
 });
 
 void loadScene(SCENES[0].id);
+void loadWasmBackend()
+  .then((backend) => {
+    wasmBackend = backend;
+    if (backendWasmButton) backendWasmButton.disabled = false;
+    if (metrics.backend) metrics.backend.textContent = "TS Morton, TS sort";
+  })
+  .catch((error) => {
+    console.warn("WASM backend unavailable", error);
+    if (backendWasmButton) backendWasmButton.textContent = "WASM unavailable";
+  });
 
 function frame() {
   requestAnimationFrame(frame);
