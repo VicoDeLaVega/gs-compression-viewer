@@ -30,21 +30,23 @@ function align4(bytes: number) {
 
 function sortedFromIndices(src: SplatSet, indices: Uint32Array): SplatSet {
   const n = src.count;
-  const sorted = {
-    name: `${src.name}-sorted`,
-    count: n,
+  const sorted: SplatSet = {
+    name:    `${src.name}-sorted`,
+    count:   n,
     centers: new Float32Array(n * 3),
-    scales: new Float32Array(n * 3),
-    quats: new Float32Array(n * 4),
-    colors: new Float32Array(n * 4),
+    scales:  new Float32Array(n * 3),
+    quats:   new Float32Array(n * 4),
+    colors:  new Float32Array(n * 4),
+    sh1:     src.sh1 ? new Float32Array(n * 9) : undefined,
   };
 
   for (let dst = 0; dst < n; dst++) {
-    const srcIdx = indices[dst];
-    sorted.centers.set(src.centers.subarray(srcIdx * 3, srcIdx * 3 + 3), dst * 3);
-    sorted.scales.set(src.scales.subarray(srcIdx * 3, srcIdx * 3 + 3), dst * 3);
-    sorted.quats.set(src.quats.subarray(srcIdx * 4, srcIdx * 4 + 4), dst * 4);
-    sorted.colors.set(src.colors.subarray(srcIdx * 4, srcIdx * 4 + 4), dst * 4);
+    const s = indices[dst];
+    sorted.centers.set(src.centers.subarray(s * 3, s * 3 + 3), dst * 3);
+    sorted.scales.set( src.scales.subarray( s * 3, s * 3 + 3), dst * 3);
+    sorted.quats.set(  src.quats.subarray(  s * 4, s * 4 + 4), dst * 4);
+    sorted.colors.set( src.colors.subarray( s * 4, s * 4 + 4), dst * 4);
+    if (src.sh1 && sorted.sh1) sorted.sh1.set(src.sh1.subarray(s * 9, s * 9 + 9), dst * 9);
   }
 
   return sorted;

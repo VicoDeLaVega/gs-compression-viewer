@@ -5,6 +5,10 @@ export type SplatSet = {
   scales: Float32Array;
   quats: Float32Array;
   colors: Float32Array;
+  /** SH degree-1 coefficients: 9 floats per splat [r1,r2,r3, g1,g2,g3, b1,b2,b3] */
+  sh1?: Float32Array;
+  /** Suggested SH blend scale [0..1]. sqrt(count/sourceCount) for subsampled scenes. */
+  shScale?: number;
 };
 
 export type SceneFactory = {
@@ -50,6 +54,7 @@ export function cloneSplats(src: SplatSet, name = src.name): SplatSet {
     scales: new Float32Array(src.scales),
     quats: new Float32Array(src.quats),
     colors: new Float32Array(src.colors),
+    sh1: src.sh1 ? new Float32Array(src.sh1) : undefined,
   };
 }
 

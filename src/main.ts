@@ -16,6 +16,15 @@ const colorToggle = document.querySelector<HTMLInputElement>("#enable-color");
 const alphaToggle = document.querySelector<HTMLInputElement>("#enable-alpha");
 const backendTsButton = document.querySelector<HTMLButtonElement>("#backend-ts");
 const backendWasmButton = document.querySelector<HTMLButtonElement>("#backend-wasm");
+const stddevSlider  = document.querySelector<HTMLInputElement>("#render-stddev");
+const stddevValue   = document.querySelector<HTMLElement>("#render-stddev-value");
+const falloffSlider = document.querySelector<HTMLInputElement>("#render-falloff");
+const falloffValue  = document.querySelector<HTMLElement>("#render-falloff-value");
+const blurSlider    = document.querySelector<HTMLInputElement>("#render-blur");
+const blurValue     = document.querySelector<HTMLElement>("#render-blur-value");
+const packedAlphaToggle = document.querySelector<HTMLInputElement>("#render-packed-alpha");
+const presetSpark   = document.querySelector<HTMLButtonElement>("#preset-spark");
+const presetSharp   = document.querySelector<HTMLButtonElement>("#preset-sharp");
 if (!canvas || !sceneSelect || !clusterSlider || !clusterValue || !positionToggle || !scaleToggle || !colorToggle || !alphaToggle) {
   throw new Error("Missing UI elements");
 }
@@ -37,6 +46,43 @@ const metrics = {
 
 const renderer = new GaussianRenderer(canvas);
 const clock = new THREE.Clock();
+renderer.controls.enabled = false;
+
+// Render parameter sliders
+function applyRenderPreset(stddev: number, falloff: number, blur: number, packedAlphaBoost = false) {
+  renderer.maxStdDev  = stddev;
+  renderer.falloff    = falloff;
+  renderer.blurAmount = blur;
+  renderer.packedAlphaBoost = packedAlphaBoost;
+  if (stddevSlider)  { stddevSlider.value  = String(stddev);  }
+  if (stddevValue)   { stddevValue.textContent  = stddev.toFixed(2); }
+  if (falloffSlider) { falloffSlider.value = String(falloff); }
+  if (falloffValue)  { falloffValue.textContent  = falloff.toFixed(2); }
+  if (blurSlider)    { blurSlider.value    = String(blur);    }
+  if (blurValue)     { blurValue.textContent     = blur.toFixed(2); }
+  if (packedAlphaToggle) { packedAlphaToggle.checked = packedAlphaBoost; }
+}
+
+stddevSlider?.addEventListener("input", () => {
+  const v = parseFloat(stddevSlider!.value);
+  renderer.maxStdDev = v;
+  if (stddevValue) stddevValue.textContent = v.toFixed(2);
+});
+falloffSlider?.addEventListener("input", () => {
+  const v = parseFloat(falloffSlider!.value);
+  renderer.falloff = v;
+  if (falloffValue) falloffValue.textContent = v.toFixed(2);
+});
+blurSlider?.addEventListener("input", () => {
+  const v = parseFloat(blurSlider!.value);
+  renderer.blurAmount = v;
+  if (blurValue) blurValue.textContent = v.toFixed(2);
+});
+packedAlphaToggle?.addEventListener("change", () => {
+  renderer.packedAlphaBoost = packedAlphaToggle.checked;
+});
+presetSpark?.addEventListener("click", () => applyRenderPreset(Math.sqrt(8), 1.0, 0.3));
+presetSharp?.addEventListener("click", () => applyRenderPreset(0.43, 0.12, 0.0));
 
 let reference: SplatSet;
 let compressed: SplatSet;
@@ -61,6 +107,112 @@ let wasmBackend: WasmBackend | null = null;
 let fpsLastTime = performance.now();
 let fpsFrames = 0;
 let lastFps = 0;
+let lastFrameTime = performance.now();
+let navigationSpeed = 1.0;
+let lookYaw = 0;
+let lookPitch = 0;
+let isMouseLooking = false;
+let lastPointerX = 0;
+let lastPointerY = 0;
+
+const movementKeys = new Set<string>();
+const movementForward = new THREE.Vector3();
+const movementRight = new THREE.Vector3();
+const movementUp = new THREE.Vector3(0, 1, 0);
+const movementDelta = new THREE.Vector3();
+const lookEuler = new THREE.Euler(0, 0, 0, "YXZ");
+
+function isTextEntryTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName);
+}
+
+window.addEventListener("keydown", (event) => {
+  if (isTextEntryTarget(event.target)) return;
+  const key = event.key.toLowerCase();
+  if (!["w", "a", "s", "d", "q", "e"].includes(key)) return;
+  movementKeys.add(key);
+  event.preventDefault();
+});
+
+window.addEventListener("keyup", (event) => {
+  movementKeys.delete(event.key.toLowerCase());
+});
+
+window.addEventListener("blur", () => {
+  movementKeys.clear();
+  isMouseLooking = false;
+});
+
+function syncLookAnglesFromCamera() {
+  lookEuler.setFromQuaternion(renderer.camera.quaternion, "YXZ");
+  lookPitch = lookEuler.x;
+  lookYaw = lookEuler.y;
+}
+
+function applyLookAngles() {
+  const maxPitch = Math.PI / 2 - 0.01;
+  lookPitch = Math.max(-maxPitch, Math.min(maxPitch, lookPitch));
+  lookEuler.set(lookPitch, lookYaw, 0, "YXZ");
+  renderer.camera.quaternion.setFromEuler(lookEuler);
+  renderer.camera.updateMatrixWorld();
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  isMouseLooking = true;
+  lastPointerX = event.clientX;
+  lastPointerY = event.clientY;
+  canvas.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!isMouseLooking) return;
+  const dx = event.movementX || event.clientX - lastPointerX;
+  const dy = event.movementY || event.clientY - lastPointerY;
+  lastPointerX = event.clientX;
+  lastPointerY = event.clientY;
+
+  const sensitivity = 0.0025;
+  lookYaw -= dx * sensitivity;
+  lookPitch -= dy * sensitivity;
+  applyLookAngles();
+});
+
+canvas.addEventListener("pointerup", (event) => {
+  isMouseLooking = false;
+  if (canvas.hasPointerCapture(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+});
+
+canvas.addEventListener("pointercancel", () => {
+  isMouseLooking = false;
+});
+
+function updateKeyboardNavigation(deltaSeconds: number) {
+  if (movementKeys.size === 0) return;
+
+  renderer.camera.getWorldDirection(movementForward);
+  movementRight.copy(movementForward).cross(renderer.camera.up).normalize();
+  movementDelta.set(0, 0, 0);
+
+  if (movementKeys.has("w")) movementDelta.add(movementForward);
+  if (movementKeys.has("s")) movementDelta.sub(movementForward);
+  if (movementKeys.has("d")) movementDelta.add(movementRight);
+  if (movementKeys.has("a")) movementDelta.sub(movementRight);
+  if (movementKeys.has("e")) movementDelta.add(movementUp);
+  if (movementKeys.has("q")) movementDelta.sub(movementUp);
+  if (movementDelta.lengthSq() === 0) return;
+
+  movementDelta.normalize();
+  const speed = navigationSpeed;
+  const step = speed * deltaSeconds;
+
+  renderer.camera.position.addScaledVector(movementDelta, step);
+  renderer.camera.updateMatrixWorld();
+}
 
 for (const scene of SCENES) {
   const option = document.createElement("option");
@@ -106,12 +258,19 @@ function compute() {
 }
 
 async function loadScene(id: string) {
+  movementKeys.clear();
   const localSpz = LOCAL_SPZ_SCENES.find((item) => item.id === id);
   const scene = SCENES.find((item) => item.id === id) ?? SCENES[0];
   reference = localSpz ? await loadLocalSpz(localSpz) : await scene.create();
+  renderer.shScale = reference.shScale ?? 1.0;
   renderer.fitToSplats(reference);
+  renderer.camera.lookAt(renderer.controls.target);
+  renderer.camera.updateMatrixWorld();
+  syncLookAnglesFromCamera();
+  navigationSpeed = Math.max(0.25, renderer.camera.position.distanceTo(renderer.controls.target) * 0.9);
   lastSortMs = 0;
   compute();
+  canvas.focus();
 }
 
 function updateMetrics() {
@@ -230,6 +389,7 @@ backendWasmButton?.addEventListener("click", () => {
 });
 
 sceneSelect.addEventListener("change", () => {
+  sceneSelect.blur();
   void loadScene(sceneSelect.value);
 });
 
@@ -247,12 +407,15 @@ void loadWasmBackend()
 
 function frame() {
   requestAnimationFrame(frame);
-  renderer.controls.update();
+  const now = performance.now();
+  const deltaSeconds = Math.min(0.05, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
+  updateKeyboardNavigation(deltaSeconds);
+  if (renderer.controls.enabled) renderer.controls.update();
   updateSorted();
   const pulse = 1 + Math.sin(clock.getElapsedTime() * 0.7) * 0.02;
   renderer.render(pulse);
   fpsFrames += 1;
-  const now = performance.now();
   const elapsed = now - fpsLastTime;
   if (elapsed >= 500) {
     lastFps = (fpsFrames * 1000) / elapsed;

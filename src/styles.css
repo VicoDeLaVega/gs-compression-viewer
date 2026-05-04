@@ -123,6 +123,30 @@ select {
   flex-wrap: wrap;
 }
 
+.slider-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: default;
+}
+
+.slider-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--blue);
+}
+
+.slider-row strong {
+  color: var(--text);
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 11px;
+  min-width: 32px;
+  text-align: right;
+}
+
 .button {
   min-width: 0;
   flex: 1;

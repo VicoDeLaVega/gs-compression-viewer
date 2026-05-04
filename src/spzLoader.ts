@@ -12,6 +12,7 @@ export type SpzScene = {
 };
 
 export const LOCAL_SPZ_SCENES: SpzScene[] = [
+  { id: "spz-test-opacity", label: "🔬 Test: opacity gradient (8 splats)", file: "test-opacity.spz" },
   { id: "spz-robot-head", label: "Spark: robot head - 45k", file: "robot-head.spz" },
   { id: "spz-pad-thai", label: "Spark: pad thai - 95k", file: "food/pad-thai.spz" },
   { id: "spz-penguin", label: "Spark: penguin - 128k", file: "penguin.spz" },
@@ -185,11 +186,15 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
     bounds.maxY - bounds.minY,
     bounds.maxZ - bounds.minZ,
   ) || 1;
-  const scale = 3 / diag;
+  // Do NOT normalise — keep raw SPZ coordinate scale so our world-space units
+  // match Spark's.  We still centre positions so the scene sits at the origin.
+  const scale = 1.0;
+  console.log(`[spzLoader] ${scene.id}: diag=${diag.toFixed(4)}, bounds X[${bounds.minX.toFixed(3)},${bounds.maxX.toFixed(3)}] Y[${bounds.minY.toFixed(3)},${bounds.maxY.toFixed(3)}] Z[${bounds.minZ.toFixed(3)},${bounds.maxZ.toFixed(3)}]`);
 
-  const opacityScale = flags & 0x80 ? 2 : 1;
+  // Spark stores opacity as byte/255 — the fragment shader doubles it and
+  // applies a "hard disc" formula for high-opacity splats (alpha*2 > 1).
   for (let i = 0, out = 0; i < sourceCount; i += stride, out++) {
-    colors[out * 4 + 3] = clamp((bytes[offset + i] / 255) * opacityScale, 0, 1);
+    colors[out * 4 + 3] = bytes[offset + i] / 255;
   }
   offset += sourceCount;
 
@@ -239,8 +244,27 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
     offset += sourceCount * 3;
   }
 
+  // SH coefficients: shVecs vectors × 3 RGB channels bytes per splat.
+  // For degree-1: shVecs=3 →  9 bytes/splat.
+  // For degree-2: shVecs=8 → 24 bytes/splat.
+  // For degree-3: shVecs=15→ 45 bytes/splat.
+  // The stride between splats in the byte array is shStride = shVecs*3,
+  // NOT a fixed 9.  Using the wrong stride reads garbage for degree>1 scenes.
+  // Encoding: value = (byte - 128) / 128
   const shVecs = [0, 3, 8, 15][shDegree] ?? 0;
-  offset += sourceCount * shVecs * 3;
+  const shStride = shVecs * 3;
+  let sh1: Float32Array | undefined;
+  if (shDegree >= 1) {
+    sh1 = new Float32Array(count * 9);
+    for (let i = 0, out = 0; i < sourceCount; i += stride, out++) {
+      const base = offset + i * shStride;  // correct per-splat byte offset
+      const dst = out * 9;
+      for (let j = 0; j < 9; j++) {
+        sh1[dst + j] = (bytes[base + j] - 128) / 128;
+      }
+    }
+  }
+  offset += sourceCount * shStride;
 
   for (let i = 0; i < count; i++) {
     const o = i * 3;
@@ -252,6 +276,12 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
     centers[o + 2] = -z;
   }
 
+  // When subsampled, each retained splat must represent more scene area than it was
+  // trained for.  SH contributions that averaged out at full density become visible
+  // noise at low density.  Scale the SH contribution by sqrt(density ratio) so that
+  // the overall variance stays proportional to the original.
+  const shScale = sh1 ? Math.sqrt(count / sourceCount) : 1.0;
+
   return {
     name: scene.id,
     count,
@@ -259,5 +289,7 @@ export async function loadLocalSpz(scene: SpzScene): Promise<SplatSet> {
     scales,
     quats,
     colors,
+    sh1,
+    shScale,
   };
 }
