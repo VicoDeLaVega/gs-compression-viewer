@@ -167,6 +167,26 @@ void main() {
   fragColor = vec4(vColor.rgb, a);
 }`;
 
+const lineVertexShader = `#version 300 es
+precision highp float;
+
+layout(location=0) in vec3 aPosition;
+uniform mat4 uViewProjection;
+
+void main() {
+  gl_Position = uViewProjection * vec4(aPosition, 1.0);
+}`;
+
+const lineFragmentShader = `#version 300 es
+precision highp float;
+
+uniform vec4 uColor;
+out vec4 fragColor;
+
+void main() {
+  fragColor = uColor;
+}`;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -189,6 +209,18 @@ function makeProgram(gl: WebGL2RenderingContext) {
   gl.linkProgram(program);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     throw new Error(gl.getProgramInfoLog(program) ?? "Program link failed");
+  }
+  return program;
+}
+
+function makeLineProgram(gl: WebGL2RenderingContext) {
+  const program = gl.createProgram();
+  if (!program) throw new Error("Could not allocate line program");
+  gl.attachShader(program, makeShader(gl, gl.VERTEX_SHADER, lineVertexShader));
+  gl.attachShader(program, makeShader(gl, gl.FRAGMENT_SHADER, lineFragmentShader));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(program) ?? "Line program link failed");
   }
   return program;
 }
@@ -221,6 +253,9 @@ export class GaussianRenderer {
   private readonly gl: WebGL2RenderingContext;
   private readonly program: WebGLProgram;
   private readonly vao: WebGLVertexArrayObject;
+  private readonly lineProgram: WebGLProgram;
+  private readonly lineVao: WebGLVertexArrayObject;
+  private readonly lineBuffer: WebGLBuffer;
 
   private readonly centerBuffer: WebGLBuffer;
   private readonly scaleBuffer:  WebGLBuffer;
@@ -243,10 +278,14 @@ export class GaussianRenderer {
   private readonly uBlurAmount:       WebGLUniformLocation;
   private readonly uFalloff:          WebGLUniformLocation;
   private readonly uPackedAlphaBoost: WebGLUniformLocation;
+  private readonly uLineViewProjection: WebGLUniformLocation;
+  private readonly uLineColor: WebGLUniformLocation;
 
   private splatCount = 0;
+  private voxelLineVertexCount = 0;
   private hasSH1     = false;
   shScale            = 1.0;
+  showVoxelGrid      = false;
   // Rendering parameters — exposed for UI control
   maxStdDev          = Math.sqrt(8); // Spark default √8 ≈ 2.83
   blurAmount         = 0.3;          // Spark default
@@ -261,6 +300,7 @@ export class GaussianRenderer {
     if (!gl) throw new Error("WebGL2 is required for this viewer");
     this.gl      = gl;
     this.program = makeProgram(gl);
+    this.lineProgram = makeLineProgram(gl);
 
     const loc = (name: string): WebGLUniformLocation => {
       const l = gl.getUniformLocation(this.program, name);
@@ -279,6 +319,13 @@ export class GaussianRenderer {
     this.uBlurAmount       = loc("uBlurAmount");
     this.uFalloff          = loc("uFalloff");
     this.uPackedAlphaBoost = loc("uPackedAlphaBoost");
+    const lineLoc = (name: string): WebGLUniformLocation => {
+      const l = gl.getUniformLocation(this.lineProgram, name);
+      if (l === null) throw new Error(`Uniform '${name}' not found in line shader`);
+      return l;
+    };
+    this.uLineViewProjection = lineLoc("uViewProjection");
+    this.uLineColor          = lineLoc("uColor");
 
     const mkBuf = () => {
       const b = gl.createBuffer();
@@ -287,7 +334,10 @@ export class GaussianRenderer {
     };
     const vao = gl.createVertexArray();
     if (!vao) throw new Error("Could not allocate VAO");
+    const lineVao = gl.createVertexArray();
+    if (!lineVao) throw new Error("Could not allocate line VAO");
     this.vao          = vao;
+    this.lineVao      = lineVao;
     this.centerBuffer = mkBuf();
     this.scaleBuffer  = mkBuf();
     this.quatBuffer   = mkBuf();
@@ -295,6 +345,7 @@ export class GaussianRenderer {
     this.sh1rBuffer   = mkBuf();
     this.sh1gBuffer   = mkBuf();
     this.sh1bBuffer   = mkBuf();
+    this.lineBuffer   = mkBuf();
 
     gl.bindVertexArray(vao);
 
@@ -319,6 +370,12 @@ export class GaussianRenderer {
     addInst(this.sh1gBuffer,   6, 3);
     addInst(this.sh1bBuffer,   7, 3);
 
+    gl.bindVertexArray(null);
+
+    gl.bindVertexArray(lineVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.lineBuffer);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
 
     this.camera.position.set(0, 0.5, 5);
@@ -383,6 +440,34 @@ export class GaussianRenderer {
     }
   }
 
+  uploadVoxelGrid(bounds: { min: [number, number, number]; max: [number, number, number] }, dims: [number, number, number]) {
+    const [nx, ny, nz] = dims;
+    const [minX, minY, minZ] = bounds.min;
+    const [maxX, maxY, maxZ] = bounds.max;
+    const vertices: number[] = [];
+    const pushLine = (ax: number, ay: number, az: number, bx: number, by: number, bz: number) => {
+      vertices.push(ax, ay, az, bx, by, bz);
+    };
+    const xAt = (i: number) => minX + (maxX - minX) * (i / nx);
+    const yAt = (i: number) => minY + (maxY - minY) * (i / ny);
+    const zAt = (i: number) => minZ + (maxZ - minZ) * (i / nz);
+
+    for (let iy = 0; iy <= ny; iy++) {
+      for (let iz = 0; iz <= nz; iz++) pushLine(minX, yAt(iy), zAt(iz), maxX, yAt(iy), zAt(iz));
+    }
+    for (let ix = 0; ix <= nx; ix++) {
+      for (let iz = 0; iz <= nz; iz++) pushLine(xAt(ix), minY, zAt(iz), xAt(ix), maxY, zAt(iz));
+    }
+    for (let ix = 0; ix <= nx; ix++) {
+      for (let iy = 0; iy <= ny; iy++) pushLine(xAt(ix), yAt(iy), minZ, xAt(ix), yAt(iy), maxZ);
+    }
+
+    const data = new Float32Array(vertices);
+    this.voxelLineVertexCount = data.length / 3;
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.lineBuffer);
+    this.gl.bufferData(this.gl.ARRAY_BUFFER, data, this.gl.STATIC_DRAW);
+  }
+
   fitToSplats(splats: SplatSet) {
     const { minX, maxX, minY, maxY, minZ, maxZ } = robustBounds(splats);
     const cx = (minX + maxX) / 2;
@@ -445,5 +530,14 @@ export class GaussianRenderer {
     gl.bindVertexArray(this.vao);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.splatCount);
     gl.bindVertexArray(null);
+
+    if (this.showVoxelGrid && this.voxelLineVertexCount > 0) {
+      gl.useProgram(this.lineProgram);
+      gl.uniformMatrix4fv(this.uLineViewProjection, false, this.viewProjection.elements);
+      gl.uniform4f(this.uLineColor, 0.35, 0.66, 1.0, 0.22);
+      gl.bindVertexArray(this.lineVao);
+      gl.drawArrays(gl.LINES, 0, this.voxelLineVertexCount);
+      gl.bindVertexArray(null);
+    }
   }
 }

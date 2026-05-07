@@ -4,6 +4,7 @@ import { compressSplats, sortSplats, type CompressionConfig, type CompressionMet
 import { GaussianRenderer } from "./renderer";
 import { SCENES, type SplatSet } from "./splats";
 import { LOCAL_SPZ_SCENES, loadLocalSpz } from "./spzLoader";
+import { createVoxelHorizonField, sampleVoxelHorizon, type HorizonSample, type VoxelHorizonField } from "./voxelField";
 import { loadWasmBackend, type WasmBackend } from "./wasmBackend";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#viewer");
@@ -25,6 +26,12 @@ const blurValue     = document.querySelector<HTMLElement>("#render-blur-value");
 const packedAlphaToggle = document.querySelector<HTMLInputElement>("#render-packed-alpha");
 const presetSpark   = document.querySelector<HTMLButtonElement>("#preset-spark");
 const presetSharp   = document.querySelector<HTMLButtonElement>("#preset-sharp");
+const voxelResolutionSlider = document.querySelector<HTMLInputElement>("#voxel-resolution");
+const voxelResolutionValue = document.querySelector<HTMLElement>("#voxel-resolution-value");
+const horizonMarginSlider = document.querySelector<HTMLInputElement>("#horizon-margin");
+const horizonMarginValue = document.querySelector<HTMLElement>("#horizon-margin-value");
+const showVoxelGridToggle = document.querySelector<HTMLInputElement>("#show-voxel-grid");
+const opacityHorizonToggle = document.querySelector<HTMLInputElement>("#enable-opacity-horizon");
 if (!canvas || !sceneSelect || !clusterSlider || !clusterValue || !positionToggle || !scaleToggle || !colorToggle || !alphaToggle) {
   throw new Error("Missing UI elements");
 }
@@ -41,6 +48,9 @@ const metrics = {
   fps: document.querySelector<HTMLElement>("#m-fps"),
   morton: document.querySelector<HTMLElement>("#m-morton"),
   sort: document.querySelector<HTMLElement>("#m-sort"),
+  voxels: document.querySelector<HTMLElement>("#m-voxels"),
+  horizon: document.querySelector<HTMLElement>("#m-horizon"),
+  horizonDebug: document.querySelector<HTMLElement>("#m-horizon-debug"),
   backend: document.querySelector<HTMLElement>("#m-backend"),
 };
 
@@ -102,6 +112,13 @@ let config: CompressionConfig = {
 let lastSortMs = 0;
 let lastSortBackend = "TS";
 let currentMetrics: CompressionMetrics;
+let voxelField: VoxelHorizonField | null = null;
+let voxelResolution = 8;
+let horizonSafetyMargin = 0.25;
+let opacityHorizonEnabled = false;
+let lastHorizonSample: HorizonSample | null = null;
+let lastRenderedCount = 0;
+let lastCulledCount = 0;
 let backendMode: "ts" | "wasm" = "ts";
 let wasmBackend: WasmBackend | null = null;
 let fpsLastTime = performance.now();
@@ -121,6 +138,7 @@ const movementRight = new THREE.Vector3();
 const movementUp = new THREE.Vector3(0, 1, 0);
 const movementDelta = new THREE.Vector3();
 const lookEuler = new THREE.Euler(0, 0, 0, "YXZ");
+const viewDirection = new THREE.Vector3();
 
 function isTextEntryTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -257,6 +275,17 @@ function compute() {
   updateMetrics();
 }
 
+function rebuildVoxelField() {
+  if (!reference) return;
+  voxelField = createVoxelHorizonField(reference, voxelResolution, [renderer.camera.position]);
+  renderer.uploadVoxelGrid(voxelField.bounds, voxelField.dims);
+  lastHorizonSample = null;
+  lastRenderedCount = 0;
+  lastCulledCount = 0;
+  sorted = null;
+  if (currentMetrics) updateMetrics();
+}
+
 async function loadScene(id: string) {
   movementKeys.clear();
   const localSpz = LOCAL_SPZ_SCENES.find((item) => item.id === id);
@@ -269,15 +298,22 @@ async function loadScene(id: string) {
   syncLookAnglesFromCamera();
   navigationSpeed = Math.max(0.25, renderer.camera.position.distanceTo(renderer.controls.target) * 0.9);
   lastSortMs = 0;
+  rebuildVoxelField();
   compute();
   canvas.focus();
 }
 
 function updateMetrics() {
   const n = reference.count;
+  const activeCount = active?.count ?? n;
   const currentBytes = n * currentMetrics.currentBytesPerSplat;
   const compressedBytes = n * currentMetrics.compressedBytesPerSplat;
-  if (metrics.count) metrics.count.textContent = n.toLocaleString();
+  if (metrics.count) {
+    const hasCullStats = opacityHorizonEnabled && (lastRenderedCount > 0 || lastCulledCount > 0);
+    metrics.count.textContent = hasCullStats
+      ? `${lastRenderedCount.toLocaleString()} / ${activeCount.toLocaleString()}`
+      : activeCount.toLocaleString();
+  }
   if (metrics.current) metrics.current.textContent = fmtBytes(currentBytes);
   if (metrics.compressed) metrics.compressed.textContent = fmtBytes(compressedBytes);
   if (metrics.bps) metrics.bps.textContent = `${currentMetrics.compressedBytesPerSplat.toFixed(2)} B`;
@@ -288,17 +324,48 @@ function updateMetrics() {
   if (metrics.fps) metrics.fps.textContent = lastFps > 0 ? lastFps.toFixed(1) : "-";
   if (metrics.morton) metrics.morton.textContent = `${currentMetrics.mortonMs.toFixed(2)} ms`;
   if (metrics.sort) metrics.sort.textContent = `${lastSortMs.toFixed(2)} ms`;
+  if (metrics.voxels) {
+    metrics.voxels.textContent = voxelField
+      ? `${voxelField.dims[0]}³ × ${voxelField.directions.length / 3} dirs (${voxelField.buildMs.toFixed(1)} ms)`
+      : "-";
+  }
+  if (metrics.horizon) {
+    if (!opacityHorizonEnabled) {
+      metrics.horizon.textContent = "off";
+    } else if (!lastHorizonSample) {
+      metrics.horizon.textContent = "outside grid";
+    } else {
+      metrics.horizon.textContent = `${lastCulledCount.toLocaleString()} culled, ${lastHorizonSample.distance.toFixed(2)} d`;
+    }
+  }
+  if (metrics.horizonDebug) {
+    if (!lastHorizonSample) {
+      metrics.horizonDebug.textContent = "-";
+    } else {
+      const [vx, vy, vz] = lastHorizonSample.voxelCoord;
+      metrics.horizonDebug.textContent = `v ${vx},${vy},${vz} dir ${lastHorizonSample.directionIndex} dot ${lastHorizonSample.directionDot.toFixed(2)}`;
+    }
+  }
   if (metrics.backend) metrics.backend.textContent = `${currentMetrics.mortonBackend} Morton, ${lastSortBackend} sort`;
 }
 
 function updateSorted() {
   if (!active) return;
-  const result = backendMode === "wasm" && wasmBackend
+  renderer.camera.getWorldDirection(viewDirection);
+  lastHorizonSample = opacityHorizonEnabled && voxelField
+    ? sampleVoxelHorizon(voxelField, renderer.camera.position, viewDirection)
+    : null;
+  const maxViewDepth = lastHorizonSample
+    ? lastHorizonSample.distance + voxelField!.maxDistance * horizonSafetyMargin
+    : undefined;
+  const result = maxViewDepth == null && backendMode === "wasm" && wasmBackend
     ? wasmBackend.sortSplats(active, renderer.camera.matrixWorldInverse.elements)
-    : sortSplats(active, renderer.camera.matrixWorldInverse.elements);
+    : sortSplats(active, renderer.camera.matrixWorldInverse.elements, { maxViewDepth });
   sorted = result.splats;
   lastSortMs = result.sortMs;
   lastSortBackend = result.backend ?? "TS";
+  lastRenderedCount = result.renderedCount ?? sorted.count;
+  lastCulledCount = result.culledCount ?? Math.max(0, active.count - lastRenderedCount);
   renderer.upload(sorted);
   updateMetrics();
 }
@@ -378,6 +445,31 @@ colorToggle.addEventListener("change", () => {
 alphaToggle.addEventListener("change", () => {
   config.enableAlpha = alphaToggle.checked;
   compute();
+});
+
+voxelResolutionSlider?.addEventListener("input", () => {
+  voxelResolution = Number(voxelResolutionSlider.value);
+  if (voxelResolutionValue) voxelResolutionValue.textContent = String(voxelResolution);
+});
+
+voxelResolutionSlider?.addEventListener("change", () => {
+  rebuildVoxelField();
+});
+
+horizonMarginSlider?.addEventListener("input", () => {
+  horizonSafetyMargin = Number(horizonMarginSlider.value) / 100;
+  if (horizonMarginValue) horizonMarginValue.textContent = `${horizonMarginSlider.value}%`;
+});
+
+showVoxelGridToggle?.addEventListener("change", () => {
+  renderer.showVoxelGrid = showVoxelGridToggle.checked;
+});
+
+opacityHorizonToggle?.addEventListener("change", () => {
+  opacityHorizonEnabled = opacityHorizonToggle.checked;
+  sorted = null;
+  lastHorizonSample = null;
+  lastCulledCount = 0;
 });
 
 backendTsButton?.addEventListener("click", () => {

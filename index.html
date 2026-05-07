@@ -116,6 +116,28 @@
           </div>
         </section>
 
+        <section class="panel-section">
+          <div class="label">Voxel field</div>
+          <label class="slider-row">
+            <span>Resolution</span>
+            <input id="voxel-resolution" type="range" min="4" max="12" step="1" value="8" />
+            <strong id="voxel-resolution-value">8</strong>
+          </label>
+          <label class="slider-row">
+            <span>Safety margin</span>
+            <input id="horizon-margin" type="range" min="0" max="100" step="1" value="25" />
+            <strong id="horizon-margin-value">25%</strong>
+          </label>
+          <label class="toggle">
+            <input id="show-voxel-grid" type="checkbox" />
+            <span>Show voxel bounds</span>
+          </label>
+          <label class="toggle">
+            <input id="enable-opacity-horizon" type="checkbox" />
+            <span>Opacity horizon culling</span>
+          </label>
+        </section>
+
         <section class="panel-section metrics">
           <div class="label">Metrics</div>
           <div class="metric-row"><span>Splats</span><strong id="m-count">-</strong></div>
@@ -129,6 +151,9 @@
           <div class="metric-row hero"><span>FPS</span><strong id="m-fps">-</strong></div>
           <div class="metric-row"><span>Morton time</span><strong id="m-morton">-</strong></div>
           <div class="metric-row"><span>Sort time</span><strong id="m-sort">-</strong></div>
+          <div class="metric-row"><span>Voxel field</span><strong id="m-voxels">-</strong></div>
+          <div class="metric-row"><span>Horizon cull</span><strong id="m-horizon">off</strong></div>
+          <div class="metric-row"><span>Horizon debug</span><strong id="m-horizon-debug">-</strong></div>
           <div class="metric-row"><span>Backend</span><strong id="m-backend">-</strong></div>
         </section>
 

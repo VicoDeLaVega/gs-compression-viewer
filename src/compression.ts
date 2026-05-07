@@ -27,6 +27,13 @@ export type SortResult = {
   splats: SplatSet;
   sortMs: number;
   backend?: string;
+  inputCount?: number;
+  renderedCount?: number;
+  culledCount?: number;
+};
+
+export type SortOptions = {
+  maxViewDepth?: number;
 };
 
 export type MortonBackend = {
@@ -239,35 +246,42 @@ export function compressSplats(
   };
 }
 
-export function sortSplats(src: SplatSet, viewMatrix: Float32Array | number[]): SortResult {
+export function sortSplats(src: SplatSet, viewMatrix: Float32Array | number[], options: SortOptions = {}): SortResult {
   const t0  = performance.now();
   const n   = src.count;
   const e2  = viewMatrix[2], e6 = viewMatrix[6], e10 = viewMatrix[10], e14 = viewMatrix[14];
+  const maxViewDepth = options.maxViewDepth;
 
   // Pre-compute view-space Z for every splat in one pass — avoids repeating the
   // 4-multiply dot product inside every comparator call (>5× faster than the
   // callback-based approach for large splat counts).
   const depths = new Float32Array(n);
+  const indices = new Uint32Array(n);
+  let renderedCount = 0;
   for (let i = 0; i < n; i++) {
     const o = i * 3;
-    depths[i] = e2 * src.centers[o] + e6 * src.centers[o + 1] + e10 * src.centers[o + 2] + e14;
+    const z = e2 * src.centers[o] + e6 * src.centers[o + 1] + e10 * src.centers[o + 2] + e14;
+    depths[i] = z;
+    const viewDepth = -z;
+    if (maxViewDepth == null || viewDepth <= maxViewDepth) {
+      indices[renderedCount++] = i;
+    }
   }
 
-  const indices = new Uint32Array(n);
-  for (let i = 0; i < n; i++) indices[i] = i;
-  indices.sort((a, b) => depths[a] - depths[b]);
+  const sortedIndices = indices.subarray(0, renderedCount);
+  sortedIndices.sort((a, b) => depths[a] - depths[b]);
 
   const sorted: SplatSet = {
     name:    `${src.name}-sorted`,
-    count:   n,
-    centers: new Float32Array(n * 3),
-    scales:  new Float32Array(n * 3),
-    quats:   new Float32Array(n * 4),
-    colors:  new Float32Array(n * 4),
-    sh1:     src.sh1 ? new Float32Array(n * 9) : undefined,
+    count:   renderedCount,
+    centers: new Float32Array(renderedCount * 3),
+    scales:  new Float32Array(renderedCount * 3),
+    quats:   new Float32Array(renderedCount * 4),
+    colors:  new Float32Array(renderedCount * 4),
+    sh1:     src.sh1 ? new Float32Array(renderedCount * 9) : undefined,
   };
-  for (let dst = 0; dst < n; dst++) {
-    const s = indices[dst];
+  for (let dst = 0; dst < renderedCount; dst++) {
+    const s = sortedIndices[dst];
     sorted.centers.set(src.centers.subarray(s * 3, s * 3 + 3), dst * 3);
     sorted.scales.set( src.scales.subarray( s * 3, s * 3 + 3), dst * 3);
     sorted.quats.set(  src.quats.subarray(  s * 4, s * 4 + 4), dst * 4);
@@ -275,5 +289,12 @@ export function sortSplats(src: SplatSet, viewMatrix: Float32Array | number[]): 
     if (src.sh1 && sorted.sh1) sorted.sh1.set(src.sh1.subarray(s * 9, s * 9 + 9), dst * 9);
   }
 
-  return { splats: sorted, sortMs: performance.now() - t0 };
+  return {
+    splats: sorted,
+    sortMs: performance.now() - t0,
+    inputCount: n,
+    renderedCount,
+    culledCount: n - renderedCount,
+    backend: maxViewDepth == null ? undefined : "TS horizon",
+  };
 }
